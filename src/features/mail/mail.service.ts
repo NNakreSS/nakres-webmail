@@ -1,102 +1,128 @@
-import { ImapSimpleOptions, Message, connect } from "imap-simple";
+import Imap from "imap";
 import { simpleParser } from "mailparser";
 
-const config: ImapSimpleOptions = {
-  imap: {
-    user: process.env.IMAP_USER!,
-    password: process.env.IMAP_PASS!,
-    host: process.env.IMAP_HOST!,
-    port: parseInt(process.env.IMAP_PORT!),
-    tls: true, // Güvenli bağlantı
-    authTimeout: 10000, // 10 saniye
-    connTimeout: 10000, // Bağlantı timeout
-    keepalive: true, // Bağlantıyı canlı tut
-    tlsOptions: {
-      rejectUnauthorized: false, // Sertifika doğrulamasını gevşet
-    },
+const config = {
+  user: process.env.IMAP_USER!,
+  password: process.env.IMAP_PASS!,
+  host: process.env.IMAP_HOST!,
+  port: parseInt(process.env.IMAP_PORT!),
+  tls: true,
+  tlsOptions: {
+    rejectUnauthorized: false,
   },
+  keepalive: true,
+  authTimeout: 10000,
 };
 
-// Bağlantı havuzu için basit bir önbellek
-let connectionPool: any = null;
+let connectionPool: Imap | null = null;
 
-async function getConnection() {
-  if (connectionPool) {
-    try {
-      // Mevcut bağlantıyı test et
-      await connectionPool.getBoxes();
-      return connectionPool;
-    } catch (error) {
-      // Bağlantı kopmuşsa yeni bağlantı kur
-      connectionPool = null;
+function getConnection(): Promise<Imap> {
+  return new Promise((resolve, reject) => {
+    if (connectionPool?.state === "authenticated") {
+      return resolve(connectionPool);
     }
-  }
 
-  console.log("new connection");
+    console.log("new connection");
+    const imap = new Imap(config);
 
-  connectionPool = await connect(config);
-  return connectionPool;
-}
-
-export async function getMails(folder = "INBOX", limit = 10, page = 1) {
-  try {
-    const connection = await getConnection();
-    await connection.openBox(folder);
-
-    const start = (page - 1) * limit + 1;
-    const end = page * limit;
-
-    const messageIds = await connection.search(["ALL"], {
-      sort: ["ARRIVAL", "DESC"],
+    imap.once("ready", () => {
+      connectionPool = imap;
+      resolve(imap);
     });
 
-    return console.log(messageIds.slice(start - 1, end));
+    imap.once("error", (err: Error) => {
+      connectionPool = null;
+      reject(err);
+    });
 
-    const fetchOptions = {
-      bodies: ["HEADER", "TEXT", ""], // Tam mesaj içeriği için boş string eklendi
-      struct: true,
-    };
+    imap.connect();
+  });
+}
 
-    const messages: Message[] = await connection.search(["ALL"], fetchOptions);
+export async function getMails(folder = "INBOX", limit = 20, page = 1) {
+  try {
+    const imap = await getConnection();
+
+    const messages = await new Promise<any[]>((resolve, reject) => {
+      imap.openBox(folder, false, (err, box) => {
+        if (err) reject(err);
+
+        // Tüm mailleri getir ve tarihe göre sırala
+        imap.search(["ALL"], (err, results) => {
+          if (err) reject(err);
+
+          // Sondan başa doğru sırala
+          results.reverse();
+
+          // Sayfalama
+          const start = (page - 1) * limit;
+          const end = start + limit;
+          const pageResults = results.slice(start, end);
+
+          const fetch = imap.fetch(pageResults, {
+            bodies: [""],
+            struct: true,
+          });
+
+          const messages: any[] = [];
+
+          fetch.on("message", (msg) => {
+            const message: any = {};
+
+            msg.on("body", (stream) => {
+              let buffer = "";
+              stream.on("data", (chunk) => {
+                buffer += chunk.toString("utf8");
+              });
+              stream.once("end", () => {
+                message.body = buffer;
+              });
+            });
+
+            msg.once("attributes", (attrs) => {
+              message.attributes = attrs;
+            });
+
+            msg.once("end", () => {
+              messages.push(message);
+            });
+          });
+
+          fetch.once("error", (err) => {
+            reject(err);
+          });
+
+          fetch.once("end", () => {
+            resolve(messages);
+          });
+        });
+      });
+    });
 
     const mails = await Promise.all(
-      messages.slice(start - 1, end).map(async (message) => {
-        const fullMessage = message.parts.find((part) => part.which === "");
-        const parsedMail = await simpleParser(fullMessage?.body || "");
+      messages.map(async (message) => {
+        const parsedMail = await simpleParser(message.body);
 
         return {
+          uid: message.attributes.uid,
           messageId: parsedMail.messageId,
           subject: parsedMail.subject || "Konu Yok",
           from: Array.isArray(parsedMail.from)
             ? parsedMail.from[0]?.text || "Gönderen Bilinmiyor"
             : parsedMail.from?.text || "Gönderen Bilinmiyor",
-          to: Array.isArray(parsedMail.to)
-            ? parsedMail.to[0]?.text || "Alıcı Bilinmiyor"
-            : parsedMail.to?.text || "Alıcı Bilinmiyor",
-          cc: Array.isArray(parsedMail.cc)
-            ? parsedMail.cc[0]?.text || ""
-            : parsedMail.cc?.text || "",
           date: parsedMail.date?.toISOString() || new Date().toISOString(),
-          text: parsedMail.text || "",
-          html: parsedMail.html || "",
-          attachments: parsedMail.attachments.map((attachment) => ({
-            filename: attachment.filename,
-            contentType: attachment.contentType,
-            size: attachment.size,
-          })),
-          flags: message.attributes?.flags || [],
-          isRead: message.attributes?.flags?.includes("\\Seen") || false,
-          isStarred: message.attributes?.flags?.includes("\\Flagged") || false,
-          headers: {
-            importance: parsedMail.headers.get("importance"),
-            references: parsedMail.references,
-            inReplyTo: parsedMail.inReplyTo,
-          },
+          isRead: message.attributes.flags?.includes("\\Seen") || false,
+          isStarred: message.attributes.flags?.includes("\\Flagged") || false,
         };
       })
     );
 
-    return mails;
+    return {
+      mails,
+      total: mails.length,
+      page,
+      totalPages: Math.ceil(mails.length / limit),
+    };
   } catch (error) {
     console.error("IMAP bağlantı hatası:", error);
     connectionPool = null;

@@ -10,10 +10,17 @@ interface Mail {
   html: string;
 }
 
+interface Data {
+  mails: Mail[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 const MailList: React.FC = () => {
-  const { data, error, isLoading } = useSWR<Mail[] | { error: string }>(
+  const { data, error, isLoading } = useSWR<Data | { error: string }>(
     "/api/mail/inbox",
     fetcher
   );
@@ -23,14 +30,14 @@ const MailList: React.FC = () => {
   if (isLoading) return <p>Mailler yükleniyor...</p>;
   if (error || (data as { error: string }).error)
     return <p>Mailler alınırken bir hata oluştu: {error?.message}</p>;
-  if (!data || (data as Mail[]).length === 0)
+  if (!data || (data as Data).mails.length === 0)
     return <p>Hiç mail bulunamadı.</p>;
 
   return (
     <div className="w-full p-4">
       <h1 className="text-2xl font-bold mb-4">Gelen Mailler</h1>
       <div className="space-y-4">
-        {(data as Mail[]).map((mail, index) => (
+        {(data as Data).mails.map((mail, index) => (
           <div key={index} className="border p-4 mb-2 rounded-lg shadow-md">
             <h2 className="font-bold">{mail.subject}</h2>
             <p>From: {mail.from}</p>
