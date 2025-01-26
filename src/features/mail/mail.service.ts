@@ -52,7 +52,7 @@ export async function getMails(folder = "INBOX", limit = 20, page = 1) {
           if (err) reject(err);
 
           // Sondan başa doğru sırala
-          results.reverse();
+          results.reverse(); //TODO: sıralama yapıldıktan sonra veri redis e yazılacak , redis de veri varsa onu okuyacak
 
           // Sayfalama
           const start = (page - 1) * limit;
@@ -60,7 +60,7 @@ export async function getMails(folder = "INBOX", limit = 20, page = 1) {
           const pageResults = results.slice(start, end);
 
           const fetch = imap.fetch(pageResults, {
-            bodies: [""],
+            bodies: [""], //TODO: yalnızca subject ve from al , daha sonra detay alınacak
             struct: true,
           });
 
